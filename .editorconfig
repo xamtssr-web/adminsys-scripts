@@ -1,0 +1,29 @@
+# Convention d'édition commune à tout le dépôt.
+# Objectif : un diff lisible, quelle que soit la machine de l'auteur.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+max_line_length = 100
+
+[*.sh]
+indent_size = 4
+# Les scripts Bash sont exécutables : pas de fin de ligne Windows,
+# sinon l'interpréteur refuse de démarrer (« bad interpreter »).
+
+[*.ps1]
+indent_size = 4
+# PowerShell utilise des fins de ligne CRLF sous Windows, mais LF fonctionne
+# parfaitement sous PowerShell 7 et garde les diffs lisibles sous Linux.
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{yml,yaml,json}]
+indent_size = 2

@@ -1,0 +1,36 @@
+# Fichiers générés par les scripts eux-mêmes
+*.log
+*.csv
+!exemples/*.csv
+*.tar
+*.tar.gz
+*.tgz
+*.age
+
+# Sorties de tests
+/tmp-test/
+couverture/
+
+# Environnements et secrets locaux — NE JAMAIS versionner
+.env
+.env.*
+!.env.exemple
+*.pem
+*.key
+*.pub
+!exemples/*.pub
+credentials*
+*secret*
+
+# Éditeurs et systèmes
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Python (scripts d'appoint)
+__pycache__/
+*.pyc
+.venv/
+venv/
