@@ -1,0 +1,43 @@
+---
+# =============================================================================
+# Role utilisateurs — gestionnaires (handlers)
+# -----------------------------------------------------------------------------
+# Ils ne s'exécutent que si un compte, une clé ou une entrée sudoers a
+# réellement changé. Rejouer le rôle sur une machine conforme ne journalise
+# donc rien et ne relance aucun contrôle : seules les modifications laissent
+# une trace, ce qui rend le journal exploitable.
+# =============================================================================
+
+# Un compte créé ou modifié est un changement d'habilitation. Le journaliser
+# côté cible (et non seulement côté contrôleur) permet de retrouver l'événement
+# depuis la machine concernée, au même endroit que les autres journaux
+# d'authentification — c'est là qu'on cherchera après un incident.
+#
+# Le module s'appelle community.general.syslogger : « syslog » n'existe plus
+# dans ansible-core, et sa répartition des « facility » est celle de syslog(3)
+# classique — « authpriv » n'y figure pas, d'où le choix de « auth » par défaut.
+- name: Journalise la campagne de gestion des comptes
+  community.general.syslogger:
+    msg: >-
+      {{ ansible_managed }} : gestion des comptes appliquée sur
+      {{ inventory_hostname }} (rôle utilisateurs, exécution depuis
+      {{ ansible_user_id | default('contrôleur') }})
+    ident: "{{ utilisateurs_journal_ident }}"
+    facility: "{{ utilisateurs_journal_facility }}"
+    priority: "{{ utilisateurs_journal_priorite }}"
+  when: utilisateurs_journaliser
+  listen: "comptes modifiés"
+
+# Contrôle global, et non plus fichier par fichier : la validation au moment de
+# l'écriture garantit que CE fichier est correct, celle-ci garantit que
+# l'ENSEMBLE de la configuration sudo reste correcte (une entrée peut très bien
+# être valide seule et entrer en conflit avec une autre). C'est exactement ce
+# que fait « visudo -c » à la main, et personne ne le fait jamais.
+#
+# command + changed_when: false : la tâche ne modifie rien, l'annoncer comme un
+# changement fausserait le compte rendu d'un --check.
+- name: Valide la configuration sudoers complète
+  ansible.builtin.command:
+    cmd: /usr/sbin/visudo -c
+  changed_when: false
+  listen: "sudoers modifié"

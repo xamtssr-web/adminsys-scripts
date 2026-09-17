@@ -1,0 +1,41 @@
+---
+# =============================================================================
+# Role durcissement — gestionnaires (handlers)
+# -----------------------------------------------------------------------------
+# Règle de conduite de ce rôle : SSH n'est rechargé QUE si sa configuration a
+# changé, et jamais sans avoir été testé juste avant. Un rechargement sans
+# nécessité est un risque pris pour rien ; un rechargement d'une configuration
+# non testée est une prise de risque tout court.
+#
+# Deux gestionnaires distincts plutôt qu'un bloc, car « listen » n'est pas un
+# attribut valide pour un bloc (Ansible le refuse) : les deux se déclenchent sur
+# la même chaîne « listen » et s'exécutent dans l'ordre où ils sont DÉFINIS ici
+# — comportement documenté d'Ansible — donc le contrôle passe toujours avant le
+# rechargement.
+# =============================================================================
+
+- name: Contrôle la configuration SSH complète avant rechargement
+  ansible.builtin.command:
+    cmd: "{{ durcissement_ssh_valider_complet }}"
+  changed_when: false
+  listen: "configuration SSH modifiée"
+
+# Le rechargement (et non le redémarrage) est ce qui rend l'opération sans
+# risque : les sessions en cours ne sont pas coupées, la nouvelle configuration
+# ne s'applique qu'aux connexions suivantes. Si elle était fautive, on la
+# corrige — et la session ouverte, elle, n'a jamais été interrompue.
+- name: Recharge le service SSH
+  ansible.builtin.systemd_service:
+    name: "{{ durcissement_par_famille[ansible_os_family].service_ssh }}"
+    state: reloaded
+  listen: "configuration SSH modifiée"
+
+# fail2ban relit ses fichiers jail.d au démarrage, pas à chaud. Un redémarrage
+# ne coupe pas les sessions en cours ; au pire, les bannissements en mémoire
+# sont perdus et reconstruits au fil des tentatives.
+- name: Redémarre fail2ban
+  ansible.builtin.systemd_service:
+    name: fail2ban
+    state: restarted
+  when: durcissement_fail2ban_actif
+  listen: "fail2ban reconfiguré"

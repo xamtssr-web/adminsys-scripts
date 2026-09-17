@@ -1,0 +1,221 @@
+---
+# =============================================================================
+# group_vars/tous.yml — variables communes à toutes les machines
+# -----------------------------------------------------------------------------
+# Ce fichier est lu pour tout hôte appartenant au groupe « tous ». C'est
+# l'endroit des décisions d'exploitation : ce qui change d'un parc à l'autre
+# vit ici, les valeurs de repli vivent dans roles/*/defaults/main.yml.
+#
+# Convention de nommage : chaque variable reprend le préfixe du rôle qui la
+# consomme (socle_, utilisateurs_, durcissement_). Deux raisons, dont une qui
+# coûte cher :
+#   - on sait immédiatement qui lit quoi, même six mois plus tard ;
+#   - une variable mal orthographiée ne produit AUCUNE erreur : Ansible crée
+#     simplement une variable inutilisée et le rôle applique sa valeur par
+#     défaut. Le préfixe rend ce genre d'erreur visible à la relecture.
+#
+# Aucun secret ici : ce fichier est versionné. Les mots de passe passent par
+# ansible-vault ou par une saisie interactive (voir « utilisateurs_liste » plus bas).
+# =============================================================================
+
+# --- Socle : heure, paquets, mises à jour ------------------------------------
+
+# Fuseau horaire. La valeur doit exister dans la base tzdata de la cible :
+# « Europe/Paris » est recommandé pour un parc français (il gère l'heure d'été
+# sans intervention, contrairement à un « CET » figé).
+socle_fuseau_horaire: Europe/Paris
+
+# Services de synchronisation retenus par le rôle selon la famille d'OS
+# (systemd-timesyncd sous Debian/Ubuntu, chronyd sous RHEL/Alma/Rocky). À
+# adapter seulement si le parc dispose déjà de son propre service de temps.
+socle_services_horloge: []
+
+# Paquets présents sur toutes les machines. Volontairement court : ce qui suit
+# se justifie par un besoin d'exploitation, pas par un confort personnel.
+# Ajoutez les vôtres par famille si besoin (socle_paquets_supplementaires).
+socle_paquets_base:
+  - ca-certificates   # chaîne de certification à jour : sans elle, curl et
+  #                     apt/dnf échouent par intermittence, difficile à relier
+  #                     à la vraie cause
+  - curl
+  - rsync             # transferts et copies de sauvegarde reprenables
+  - htop              # présent dans les dépôts de Debian 12, Ubuntu 22.04+ et
+  #                     RHEL 9+ (sur un RHEL 8, il vient d'EPEL : l'absence
+  #                     d'un paquet fait échouer la tâche, ce qui se voit au
+  #                     --check avant tout déploiement)
+  - unzip
+
+# Les paquets propres à chaque famille (vim-tiny sous Debian, vim-enhanced sous
+# RHEL) sont définis dans le rôle lui-même, via socle_paquets_par_famille : ce
+# sont des noms qui n'existent que dans une famille de distributions, et les
+# écrire ici les ferait échouer sur l'autre.
+
+# Mises à jour de sécurité appliquées automatiquement (unattended-upgrades
+# sous Debian/Ubuntu, dnf-automatic sous RHEL/Alma/Rocky). Le rôle met à jour
+# la sécurité uniquement, jamais la version majeure : une montée de version
+# non testée sur un serveur de production est un incident, pas une maintenance.
+socle_maj_auto_active: true
+
+# Message d'accueil (/etc/motd). Il sert à deux choses : dire à qui appartient
+# la machine, et décourager l'improvisation sur un serveur de production.
+socle_motd_titre: "Serveur d'exploitation — accès réservé"
+socle_motd_responsable: "Équipe exploitation — exemple.fr"
+socle_motd_avertissement: >-
+  Toute intervention doit être tracée. La configuration est gérée par Ansible :
+  une modification faite à la main sera écrasée au prochain passage.
+
+# --- Utilisateurs ------------------------------------------------------------
+# Liste des comptes à garantir sur les machines. Le rôle est idempotent : il
+# crée ce qui manque, aligne ce qui dérive, et ne supprime RIEN sans que ce soit
+# demandé (utilisateurs_a_supprimer, vide par défaut).
+#
+# Champs reconnus par rôle utilisateurs :
+#   nom                (obligatoire) nom du compte, minuscules
+#   commentaire        champ descriptif (GECOS) : « Prénom Nom » ou le rôle
+#   groupes            groupes secondaires supplémentaires
+#   sudo               true => ajout au groupe sudo/wheel ET entrée sudoers
+#                      dédiée dans /etc/sudoers.d/
+#   cles_ssh           liste de clés PUBLIQUES autorisées (jamais la privée)
+#   coquille           interpréteur de connexion
+#   expiration         date AAAA-MM-JJ d'expiration du compte
+#   mot_de_passe_hash  empreinte du mot de passe (voir ci-dessous)
+#   uid                uid explicite (utile pour un compte de service partagé)
+
+utilisateurs_liste:
+  # Le compte de secours est LA variable de sécurité de ce dépôt. Il est créé
+  # avant le durcissement, il porte une clé publique et sudo : si le
+  # durcissement SSH se passe mal, c'est par lui qu'on rentre réparer.
+  # Le rôle « durcissement » refuse de s'exécuter si ce compte est absent de la
+  # liste ci-dessous, ou s'il n'a ni clé ni sudo.
+  - nom: admin-secours
+    commentaire: "Compte de secours — accès SSH de secours"
+    sudo: true
+    coquille: /bin/bash
+    # Aucune clé dans l'exemple, et c'est volontaire : on ne versionne pas
+    # d'exemple de clé, on renseigne la sienne. Deux façons de faire :
+    #
+    #   cles_ssh:
+    #     - "{{ lookup('file', 'fichiers/cles/admin-secours.pub') | trim }}"
+    #
+    # ou la clé publique collée directement (elle n'est pas secrète) :
+    #
+    #   cles_ssh:
+    #     - "ssh-ed25519 AAAA... votre clé ... admin@poste"
+    #
+    # Tant que cette liste est vide, gardez l'authentification par mot de passe
+    # active (durcissement_ssh_mot_de_passe_autorise plus bas) : le rôle
+    # durcissement vérifie la cohérence des deux avant de toucher à SSH.
+    cles_ssh: []
+
+    # Mot de passe : jamais en clair, jamais en clair NON PLUS dans un fichier
+    # vaulté par confort. Deux usages acceptables :
+    #
+    #   1) empreinte figée, calculée une fois et versionnée :
+    #        mot_de_passe_hash: "$6$unselaleatoire$empreinte..."
+    #      à produire avec :
+    #        ansible localhost -m debug -a \
+    #          "msg={{ 'MonMotDePasse' | password_hash('sha512', 'unsel') }}"
+    #
+    #   2) mot de passe stocké dans un coffre ansible-vault, puis haché au vol :
+    #        # fichier chiffré : group_vars/tous/vault.yml
+    #        mot_de_passe_hash: "{{ vault_mot_de_passe_admin | password_hash('sha512') }}"
+    #
+    # Sans mot_de_passe_hash, le compte est créé VERROUILLÉ (password: "!") et
+    # n'est accessible que par clé SSH ou depuis la console. C'est le bon
+    # défaut : on n'ouvre pas une porte qu'on n'a pas décidé d'ouvrir.
+    # mot_de_passe_hash: "{{ vault_mot_de_passe_admin | password_hash('sha512') }}"
+
+  - nom: exploit
+    commentaire: "Exploitation — compte nominatif"
+    sudo: true
+    coquille: /bin/bash
+    cles_ssh: []
+
+  - nom: sauvegarde
+    commentaire: "Compte technique — sauvegardes (pas de connexion interactive)"
+    coquille: /usr/sbin/nologin
+    groupes:
+      - adm   # lecture des journaux (le groupe existe sous Debian et sous RHEL).
+    #         Un groupe absent fait échouer la tâche : déclarez-le dans
+    #         utilisateurs_groupes_a_creer si votre parc ne le fournit pas.
+    cles_ssh: []
+    # Un compte technique n'a jamais besoin de sudo : sans entrée sudoers, une
+    # compromission de ce compte ne donne rien de plus qu'un accès en lecture.
+
+# Comptes à retirer des machines. Vide par défaut, et c'est essentiel : une
+# suppression ne doit jamais découler d'un oubli de saisie. Pour retirer un
+# compte, on l'inscrit ici explicitement, on relit le --check, puis on rejoue.
+utilisateurs_a_supprimer: []
+
+# --- Durcissement ------------------------------------------------------------
+
+# Compte de secours attendu par le rôle durcissement. Il doit figurer dans la
+# liste « utilisateurs_liste » ci-dessus : un durcissement qui coupe l'accès SSH sans
+# porte de sortie transforme une erreur de configuration en intervention
+# physique sur le serveur.
+durcissement_utilisateur_secours: admin-secours
+
+# Authentification par mot de passe SSH. Mettre false est l'état visé d'un
+# serveur exposé — mais seulement quand les clés publiques sont en place, ce
+# que le rôle vérifie (assert) avant d'écrire la directive. Mettre ce
+# garde-fou à false sans clé déclarée arrête le playbook avec un message
+# explicite, au lieu de vous enfermer dehors.
+durcissement_ssh_mot_de_passe_autorise: true
+
+# Port d'écoute SSH. Laissé à 22 : le déplacer apporte peu face à un scanner
+# (qui teste les ports) et coûte cher en exploitation (pare-feu, tunnels,
+# scripts, documentation, mémorisation). Si vous le changez, déclarez la règle
+# correspondante dans durcissement_pare_feu_regles ci-dessous, sinon le
+# pare-feu fermera l'accès.
+durcissement_ssh_port: 22
+
+# Règles de pare-feu entrantes supplémentaires, déclaratives et idempotentes.
+# Seules les règles listées ici seront ouvertes, en plus de SSH : la politique
+# par défaut est de refuser, donc l'oubli d'une règle se voit immédiatement
+# (service injoignable) alors qu'un pare-feu trop permissif ne se voit jamais.
+durcissement_pare_feu_regles:
+  - port: 80
+    protocole: tcp
+    commentaire: "HTTP — redirection vers HTTPS"
+  - port: 443
+    protocole: tcp
+    commentaire: "HTTPS — service exposé"
+
+# fail2ban : bannissement temporaire après échecs d'authentification répétés.
+# Le réglage est un compromis : trop agressif, il bannit un poste d'admin qui
+# s'est trompé de mot de passe ; trop laxiste, il ne sert à rien. 5 essais sur
+# 10 minutes, 1 heure de bannissement est un réglage raisonnable, doublé d'une
+# alerte de supervision (le bannissement est un signal, pas un aboutissement).
+durcissement_fail2ban_maxretry: 5
+durcissement_fail2ban_findtime: 10m
+durcissement_fail2ban_bantime: 1h
+
+# Paramètres noyau appliqués via /etc/sysctl.d/99-durcissement.conf.
+# Chaque entrée est justifiée ; ce qui n'est pas compris n'est pas appliqué.
+# À retirer de cette liste : toute valeur incompatible avec le rôle de la
+# machine (net.ipv4.ip_forward sur un routeur, par exemple).
+durcissement_sysctl:
+  # Traces d'exécution : le noyau ne donne pas d'adresse à un utilisateur non
+  # privilégié, ce qui complique l'exploitation de vulnérabilités mémoire.
+  kernel.kptr_restrict: 1
+  kernel.dmesg_restrict: 1
+  # Secure Attention Key désactivée : elle permet d'afficher des informations
+  # système ou de tuer processus depuis la console physique.
+  kernel.sysrq: 0
+  # Mémoire : ASLR complet et vidage mémoire des programmes suid interdit.
+  kernel.randomize_va_space: 2
+  fs.suid_dumpable: 0
+  fs.protected_hardlinks: 1
+  fs.protected_symlinks: 1
+  # Réseau : pas de routage par défaut (à ajuster si la machine route), pas de
+  # redirections ICMP acceptées ni envoyées, pas de source routing, protection
+  # contre les paquets usurpés (rp_filter), journaux des paquets impossibles.
+  net.ipv4.ip_forward: 0
+  net.ipv4.conf.all.accept_redirects: 0
+  net.ipv4.conf.all.secure_redirects: 0
+  net.ipv4.conf.all.send_redirects: 0
+  net.ipv4.conf.all.accept_source_route: 0
+  net.ipv4.conf.all.rp_filter: 1
+  net.ipv4.conf.all.log_martians: 1
+  net.ipv4.icmp_echo_ignore_broadcasts: 1
+  net.ipv4.tcp_syncookies: 1

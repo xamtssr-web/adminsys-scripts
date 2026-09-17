@@ -107,7 +107,6 @@ init_script "/var/log/backup-rotation.log" "/var/run/backup-rotation.lock"
 
 # --- Préparation -------------------------------------------------------------
 HORODATAGE="$(date '+%Y-%m-%d_%Hh%M')"
-NOM_BASE="${PREFIXE}_${HORODATAGE}"
 JOUR_SEMAINE="$(date '+%u')"    # 1 = lundi … 7 = dimanche
 JOUR_MOIS="$(date '+%d')"
 
@@ -117,6 +116,31 @@ else
     mkdir -p "$DESTINATION" || die "Impossible de créer ${DESTINATION}"
 fi
 
+# Nom de base unique. Deux sauvegardes lancées dans la même minute produiraient
+# sinon le même nom : « gzip » refuse alors d'écraser l'archive existante, échoue
+# et laisse un .tar orphelin (défaut constaté en test réel sur un second hôte).
+# On teste donc TOUS les fichiers dérivés, manifeste compris.
+nom_base_unique() {
+    local prefixe="$1" horodatage="$2"
+    local candidat suffixe=0
+    while :; do
+        candidat="${prefixe}_${horodatage}"
+        if (( suffixe > 0 )); then
+            candidat="${candidat}.${suffixe}"
+        fi
+        if [[ ! -e "${DESTINATION}/${candidat}.tar" ]] \
+        && [[ ! -e "${DESTINATION}/${candidat}.tar.gz" ]] \
+        && [[ ! -e "${DESTINATION}/${candidat}.tar.age" ]] \
+        && [[ ! -e "${DESTINATION}/${candidat}.manifeste" ]]; then
+            printf '%s' "$candidat"
+            return 0
+        fi
+        suffixe=$(( suffixe + 1 ))
+    done
+}
+
+NOM_BASE="$(nom_base_unique "$PREFIXE" "$HORODATAGE")"
+
 # Calcul de l'espace nécessaire : on estime à ~60 % de la taille des sources
 # (ordre de grandeur d'un tar.gz sur des données mixtes) pour refuser tôt.
 TAILLE_TOTALE=0
@@ -125,7 +149,32 @@ for src in "${SOURCES[@]}"; do
     TAILLE_TOTALE=$(( TAILLE_TOTALE + ${taille:-0} ))
 done
 BESOIN=$(( TAILLE_TOTALE * 6 / 10 ))
-DISPONIBLE="$(df -B1 --output=avail "$DESTINATION" | tail -1 | tr -d ' ')"
+# Le répertoire de destination peut ne pas exister encore — c'est le cas en mode
+# simulation, et aussi au tout premier lancement. On mesure alors l'espace sur
+# l'ancêtre existant le plus proche, sinon « df » échoue et, sous set -e, tue
+# le script : c'est exactement le bug constaté en test sur un hôte vierge.
+repertoire_existant() {
+    local chemin="${1:?}"
+    while [[ -n "$chemin" && ! -d "$chemin" ]]; do
+        local parent
+        parent="$(dirname "$chemin")"
+        [[ "$parent" == "$chemin" ]] && break    # racine atteinte
+        chemin="$parent"
+    done
+    if [[ -n "$chemin" && -d "$chemin" ]]; then
+        printf '%s' "$chemin"
+    else
+        printf '.'
+    fi
+}
+
+REF_ESPACE="$(repertoire_existant "$DESTINATION")"
+DISPONIBLE="$(df -B1 --output=avail "$REF_ESPACE" 2>/dev/null | tail -1 | tr -d ' ')"
+if [[ ! "$DISPONIBLE" =~ ^[0-9]+$ ]]; then
+    log_warn "espace disponible illisible sur ${REF_ESPACE} — contrôle d'espace ignoré"
+    DISPONIBLE=0
+    BESOIN=0
+fi
 
 log_info "sources       : ${SOURCES[*]}"
 log_info "taille source : $(human_bytes "$TAILLE_TOTALE")"
@@ -205,6 +254,10 @@ fi
 # Les mensuelles    : celles du 1er du mois.
 supprimer_au_dela() {
     local motif="$1" garder="$2" description="$3"
+    # Rien à faire si le dossier de destination n'existe pas encore : c'est le cas
+    # en mode simulation, et « find » y échouerait (erreur remontée par le trap).
+    [[ -d "$DESTINATION" ]] || return 0
+
     local liste total
     mapfile -t liste < <(find "$DESTINATION" -maxdepth 1 -name "${motif}" -type f -printf '%T@ %p\n' \
         | sort -rn | awk '{print $2}')
@@ -215,15 +268,26 @@ supprimer_au_dela() {
         return 0
     fi
 
-    local i
+    local i base
     for (( i = garder; i < total; i++ )); do
         run rm -f "${liste[$i]}" || true
+        # Le manifeste accompagne son archive : le laisser derrière produirait des
+        # fichiers orphelins qui faussent les contrôles ultérieurs d'intégrité.
+        base="${liste[$i]%.tar.gz}"
+        base="${base%.tar.age}"
+        if [[ -e "${base}.manifeste" ]]; then
+            run rm -f "${base}.manifeste" || true
+        fi
         log_info "suppression (${description}) : $(basename "${liste[$i]}")"
     done
 }
 
 supprimer_au_dela "${PREFIXE}_*.tar.gz" "$RET_H" "horaire"
 supprimer_au_dela "${PREFIXE}_*-*-*_00h*.tar.gz" "$RET_J" "quotidienne"
+# Les archives chiffrées (.tar.age) suivent exactement la même rétention :
+# sans ces deux lignes, une sauvegarde chiffrée ne serait jamais purgée.
+supprimer_au_dela "${PREFIXE}_*.tar.age" "$RET_H" "horaire (chiffrée)"
+supprimer_au_dela "${PREFIXE}_*-*-*_00h*.tar.age" "$RET_J" "quotidienne (chiffrée)"
 if [[ "$JOUR_SEMAINE" == "7" ]] || (( RET_J == 0 )); then
     supprimer_au_dela "${PREFIXE}_*-*-*_03h*.tar.gz" "$RET_S" "hebdomadaire"
 fi
@@ -231,9 +295,14 @@ if [[ "$JOUR_MOIS" == "01" ]]; then
     supprimer_au_dela "${PREFIXE}_*-*-*_04h*.tar.gz" "$RET_M" "mensuelle"
 fi
 
-# Nettoyage des archives partielles (interruption en cours d'écriture)
-if (( ! DRY_RUN )); then
-    find "$DESTINATION" -maxdepth 1 -name "${PREFIXE}_*.tar.gz.part" -mtime +1 -delete 2>/dev/null || true
+# Nettoyage des restes d'une exécution interrompue : un .tar non compressé ou
+# une archive partielle signale une sauvegarde qui n'a pas abouti. On ne purge
+# que ce qui a plus d'un jour, pour ne pas toucher à une exécution en cours.
+if (( ! DRY_RUN )) && [[ -d "$DESTINATION" ]]; then
+    find "$DESTINATION" -maxdepth 1 -type f \( -name "${PREFIXE}_*.tar" -o -name "${PREFIXE}_*.tar.gz.part" \) \
+        -mtime +1 -print -delete 2>/dev/null | while IFS= read -r reste; do
+        log_warn "reste d'une sauvegarde interrompue supprimé : $(basename "$reste")"
+    done
 fi
 
 fin_script "Sauvegarde terminée : $(basename "$ARCHIVE")"

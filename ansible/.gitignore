@@ -1,0 +1,15 @@
+# Éléments locaux au dossier ansible/ — jamais versionnés.
+# Le .gitignore de la racine couvre déjà les secrets et les sorties de
+# scripts ; celui-ci couvre ce que le volet Ansible produit ou télécharge.
+
+# Cache des faits (fact_caching_connection dans ansible.cfg) : il ne contient
+# que des informations d'inventaire de la machine qui l'a produit.
+.cache/
+
+# Collections installées par « ansible-galaxy collection install ». Une
+# dépendance se réinstalle à partir de collections/requirements.yml : la
+# versionner revient à copier une bibliothèque dans un dépôt de code.
+collections/ansible_collections/
+
+# Journaux d'exécution produits par une redirection explicite.
+*.log

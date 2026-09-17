@@ -1,0 +1,23 @@
+{# ========================================================================= #}
+{# sudoers.j2 — entrée sudoers dédiée à un compte privilégié                 #}
+{#                                                                            #}
+{# Installée dans /etc/sudoers.d/50-<compte>, en 0440 root:root, validée par   #}
+{# « visudo -cf » avant d'être mise en place. Un fichier séparé par compte a    #}
+{# deux avantages : il se relit d'un coup d'œil, et le retirer ne touche pas    #}
+{# aux droits des autres.                                                     #}
+{# ========================================================================= #}
+# {{ ansible_managed }} — fichier géré, ne pas modifier à la main.
+# Droits accordés au compte {{ item.nom }}
+# ({{ item.commentaire | default('sans description dans l\'inventaire') }})
+
+{% if item.sudo_commandes | default(utilisateurs_sudo_commandes_defaut) | length > 0 %}
+# Droits restreints : ce compte ne peut exécuter que les commandes listées.
+{% for commande in item.sudo_commandes | default(utilisateurs_sudo_commandes_defaut) %}
+{{ item.nom }} ALL=(ALL:ALL) {{ commande }}
+{% endfor %}
+{% else %}
+# Droits complets. À réserver aux comptes d'administration nominatifs : un
+# accès sudo sans restriction n'est pas plus sûr qu'un accès root, il est
+# seulement plus traçable dans les journaux.
+{{ item.nom }} ALL=(ALL:ALL) ALL
+{% endif %}

@@ -1,0 +1,366 @@
+---
+# =============================================================================
+# Role durcissement — tâches
+# -----------------------------------------------------------------------------
+# Philosophie générale : ce rôle est le seul du dépôt capable de couper l'accès
+# à une machine. Il est donc écrit en trois temps :
+#
+#   1. VÉRIFIER — la configuration actuelle est-elle saine ? le compte de
+#      secours existe-t-il ? une clé publique est-elle déclarée avant de couper
+#      l'authentification par mot de passe ? Rien n'est écrit tant que ces
+#      réponses ne sont pas bonnes.
+#   2. OUVRIR AVANT DE FERMER — le pare-feu autorise SSH avant d'être activé,
+#      la bannière existe avant que SSH ne la référence.
+#   3. VALIDER — chaque fichier écrit est contrôlé par « sshd -t » avant
+#      installation, et le service n'est rechargé que si quelque chose a changé.
+#
+# Conséquence pratique : si le rôle échoue, il a échoué AVANT d'avoir modifié
+# quoi que ce soit. C'est ce qu'on attend d'un durcissement.
+# =============================================================================
+
+- name: Vérifie que la famille d'OS est prise en charge par le rôle
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family in durcissement_familles_supportees
+    fail_msg: >-
+      Famille d'OS « {{ ansible_os_family }} » non prise en charge (prévu :
+      {{ durcissement_familles_supportees | join(', ') }}). Complétez
+      durcissement_par_famille dans roles/durcissement/defaults/main.yml.
+    quiet: true
+  tags: [always]
+
+# --- Garde-fou : compte de secours -------------------------------------------
+
+# Ce contrôle est la raison d'être de tout le reste : un durcissement SSH qui
+# se trompe, sans compte de secours, transforme une erreur de configuration en
+# déplacement sur site — quand la machine n'est pas simplement inaccessible.
+- name: Vérifie le compte de secours avant toute modification de SSH
+  ansible.builtin.assert:
+    that:
+      - durcissement_utilisateur_secours | length > 0
+      - durcissement_utilisateur_secours in (utilisateurs_liste | map(attribute='nom') | list)
+      - durcissement_utilisateur_secours in (utilisateurs_liste | selectattr('sudo', 'defined') | selectattr('sudo') | map(attribute='nom') | list)
+    fail_msg: >-
+      Le compte de secours « {{ durcissement_utilisateur_secours | default('non défini') }} »
+      n'existe pas dans la liste « utilisateurs » de l'inventaire, ou n'a pas
+      « sudo: true ». Refus de poursuivre : durcir SSH sans accès de secours
+      est le moyen le plus rapide de perdre l'administration d'un serveur.
+      Corrigez group_vars/tous.yml (variables durcissement_utilisateur_secours
+      et utilisateurs), ou jouez d'abord « --tags utilisateurs ».
+    quiet: true
+  when: utilisateurs_liste is defined
+  tags: [always]
+
+# --- SSH : vérifications avant écriture --------------------------------------
+
+- name: Relève la présence du serveur SSH
+  ansible.builtin.stat:
+    path: "{{ durcissement_ssh_binaire }}"
+  register: durcissement_ssh_present
+  tags: [durcissement, ssh]
+
+- name: Vérifie que le serveur SSH est bien installé
+  ansible.builtin.assert:
+    that:
+      - durcissement_ssh_present.stat.exists
+    fail_msg: >-
+      {{ durcissement_ssh_binaire }} est absent : le paquet openssh-server
+      n'est pas installé. Durcir SSH n'a pas de sens ici — installez-le (ou
+      retirez cet hôte du play) avant de rejouer.
+    quiet: true
+  tags: [durcissement, ssh]
+
+# La configuration de la machine est testée AVANT d'être modifiée. Sans cette
+# étape, une configuration déjà cassée avant notre passage rend impossible
+# l'attribution de la panne : vient-elle de notre fichier, ou était-elle là
+# avant ? sshd -t répond en une seconde à cette question.
+- name: Contrôle la configuration SSH actuellement en place
+  ansible.builtin.command:
+    cmd: "{{ durcissement_ssh_valider_complet }}"
+  register: durcissement_ssh_controle_initial
+  changed_when: false
+  failed_when: false
+  tags: [durcissement, ssh]
+
+- name: Refuse de durcir une configuration SSH déjà invalide
+  ansible.builtin.assert:
+    that:
+      - durcissement_ssh_controle_initial.rc == 0
+    fail_msg: >-
+      « {{ durcissement_ssh_valider_complet }} » signale déjà une erreur sur
+      cette machine : {{ durcissement_ssh_controle_initial.stderr | default('') | trim }}
+      Corrigez la configuration existante avant de la durcir, sinon la panne
+      éventuelle ne sera imputable à personne — et sshd refusera de redémarrer.
+    quiet: true
+  tags: [durcissement, ssh]
+
+# Le fichier de configuration principal doit inclure le dépôt de fichiers, et
+# c'est trop important pour être supposé : sans cette ligne, notre fichier
+# durci est proprement ignoré, le contrôle « sshd -t » passe, et le serveur
+# reste permissif tout en affichant un playbook en vert. Le rôle refuse de
+# deviner, et n'édite pas la configuration livrée par la distribution à la
+# place de l'exploitant.
+- name: Lit la configuration SSH principale
+  ansible.builtin.slurp:
+    src: "{{ durcissement_ssh_config_principale }}"
+  register: durcissement_ssh_principal
+  tags: [durcissement, ssh]
+
+- name: Vérifie que la configuration SSH principale inclut le dossier de fichiers
+  ansible.builtin.assert:
+    that:
+      - "'Include ' ~ durcissement_ssh_dossier_config in (durcissement_ssh_principal.content | b64decode)"
+    fail_msg: >-
+      {{ durcissement_ssh_config_principale }} n'inclut pas
+      {{ durcissement_ssh_dossier_config }} : le fichier de durcissement serait
+      écrit puis ignoré, et la machine resterait permissive. Ajoutez la ligne
+      « Include {{ durcissement_ssh_dossier_config }}/*.conf » en tête de ce
+      fichier, puis rejouez.
+    quiet: true
+  tags: [durcissement, ssh]
+
+# --- SSH : écriture ----------------------------------------------------------
+
+# La bannière est écrite AVANT le fichier de configuration : la directive
+# « Banner » référence un fichier, et « sshd -t » refuse une configuration qui
+# pointe vers un fichier absent. L'ordre des tâches n'est donc pas une
+# coquetterie de rangement.
+- name: Publie la bannière de connexion SSH
+  ansible.builtin.template:
+    src: banniere-ssh.j2
+    dest: "{{ durcissement_ssh_banniere }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: durcissement_ssh_banniere_active
+  notify: Contrôle puis recharge le service SSH
+  tags: [durcissement, ssh]
+
+# validate: « sshd -t -f » teste le fichier temporaire avant de le mettre en
+# place. Une directive invalide, une faute de frappe, une valeur refusée par
+# cette version d'OpenSSH : rien n'est installé, la machine reste sur sa
+# configuration précédente (qui fonctionne), et l'erreur est affichée.
+# C'est la différence entre un durcissement et une prise de risque.
+- name: Écrit la configuration SSH durcie
+  ansible.builtin.template:
+    src: sshd-durcissement.conf.j2
+    dest: "{{ durcissement_ssh_config }}"
+    owner: root
+    group: root
+    mode: "0600"
+    validate: "{{ durcissement_ssh_valider_fichier }}"
+  notify: Contrôle puis recharge le service SSH
+  tags: [durcissement, ssh]
+
+# --- Pare-feu : ouvrir avant d'activer (Debian/Ubuntu) -----------------------
+
+- name: Vérifie la politique de pare-feu déclarée
+  ansible.builtin.assert:
+    that:
+      - durcissement_pare_feu_politique_entrante in durcissement_pare_feu_politiques_valides
+    fail_msg: >-
+      « {{ durcissement_pare_feu_politique_entrante }} » n'est pas une politique
+      de pare-feu valide (attendu :
+      {{ durcissement_pare_feu_politiques_valides | join(', ') }}). Une valeur
+      refusée activerait le pare-feu sans la règle par défaut prévue — c'est-à-dire
+      dans un état que personne n'a décidé.
+    quiet: true
+  when: durcissement_pare_feu_actif
+  tags: [durcissement, pare-feu]
+
+- name: Installe le pare-feu (Debian/Ubuntu)
+  ansible.builtin.package:
+    name: "{{ durcissement_par_famille[ansible_os_family].paquets_pare_feu }}"
+    state: present
+  when:
+    - durcissement_pare_feu_actif
+    - ansible_os_family == 'Debian'
+  tags: [durcissement, pare-feu]
+
+- name: Autorise SSH avant toute activation du pare-feu (Debian/Ubuntu)
+  community.general.ufw:
+    rule: allow
+    port: "{{ durcissement_ssh_port }}"
+    proto: tcp
+  when:
+    - durcissement_pare_feu_actif
+    - durcissement_pare_feu_ssh_autorise
+    - ansible_os_family == 'Debian'
+  tags: [durcissement, pare-feu]
+
+- name: Autorise les ports déclarés par l'inventaire (Debian/Ubuntu)
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.protocole }}"
+  loop: "{{ durcissement_pare_feu_regles }}"
+  loop_control:
+    label: "{{ item.port }}/{{ item.protocole }}"
+  when:
+    - durcissement_pare_feu_actif
+    - ansible_os_family == 'Debian'
+  tags: [durcissement, pare-feu]
+
+# noqa: args[module] — « policy » reçoit une variable d'inventaire, que
+# l'analyse statique d'ansible-lint ne peut pas évaluer (elle n'accepte que les
+# littéraux « allow », « deny », « reject »). La valeur est vérifiée à
+# l'exécution par l'assert « Vérifie la politique de pare-feu déclarée ».
+- name: Active le pare-feu avec refus par défaut en entrée (Debian/Ubuntu)  # noqa: args[module]
+  community.general.ufw:
+    state: enabled
+    policy: "{{ durcissement_pare_feu_politique_entrante }}"
+    direction: incoming
+  when:
+    - durcissement_pare_feu_actif
+    - ansible_os_family == 'Debian'
+  tags: [durcissement, pare-feu]
+
+# --- Pare-feu : ouvrir avant d'activer (RHEL/Alma/Rocky) ---------------------
+
+- name: Installe et démarre firewalld (RHEL/Alma/Rocky)
+  when:
+    - durcissement_pare_feu_actif
+    - ansible_os_family == 'RedHat'
+  tags: [durcissement, pare-feu]
+  block:
+    - name: Installe le pare-feu (RHEL/Alma/Rocky)
+      ansible.builtin.package:
+        name: "{{ durcissement_par_famille[ansible_os_family].paquets_pare_feu }}"
+        state: present
+
+    - name: Démarre et active firewalld
+      ansible.builtin.systemd_service:
+        name: "{{ durcissement_par_famille[ansible_os_family].service_pare_feu }}"
+        enabled: true
+        state: started
+
+# permanent + immediate : la règle est écrite dans la configuration persistante
+# ET appliquée tout de suite. « permanent » seul ne prend effet qu'au
+# rechargement, c'est-à-dire jamais dans la fenêtre où l'on en a besoin ;
+# « immediate » seul disparaît au redémarrage suivant.
+- name: Autorise SSH avant toute activation du pare-feu (RHEL/Alma/Rocky)
+  ansible.posix.firewalld:
+    service: ssh
+    permanent: true
+    immediate: true
+    state: enabled
+  when:
+    - durcissement_pare_feu_actif
+    - durcissement_pare_feu_ssh_autorise
+    - ansible_os_family == 'RedHat'
+  tags: [durcissement, pare-feu]
+
+- name: Autorise les ports déclarés par l'inventaire (RHEL/Alma/Rocky)
+  ansible.posix.firewalld:
+    port: "{{ item.port }}/{{ item.protocole }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ durcissement_pare_feu_regles }}"
+  loop_control:
+    label: "{{ item.port }}/{{ item.protocole }}"
+  when:
+    - durcissement_pare_feu_actif
+    - ansible_os_family == 'RedHat'
+  tags: [durcissement, pare-feu]
+
+# --- fail2ban ---------------------------------------------------------------
+
+- name: Installe fail2ban
+  ansible.builtin.package:
+    name: "{{ durcissement_par_famille[ansible_os_family].paquets_fail2ban }}"
+    state: present
+  when: durcissement_fail2ban_actif
+  tags: [durcissement, fail2ban]
+
+- name: Écrit la configuration fail2ban
+  ansible.builtin.template:
+    src: fail2ban-jail.local.j2
+    dest: "{{ durcissement_fail2ban_fichier }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: durcissement_fail2ban_actif
+  notify: Redémarre fail2ban
+  tags: [durcissement, fail2ban]
+
+- name: Active et démarre fail2ban
+  ansible.builtin.systemd_service:
+    name: fail2ban
+    enabled: true
+    state: started
+  when: durcissement_fail2ban_actif
+  tags: [durcissement, fail2ban]
+
+# --- Paramètres noyau -------------------------------------------------------
+
+# dict2items transforme l'application en une boucle lisible : la liste des
+# paramètres vit dans l'inventaire, la tâche ne fait que l'appliquer.
+# sysctl_set: true vérifie la valeur RÉELLEMENT appliquée par le noyau (et pas
+# seulement le contenu du fichier) : c'est la seule façon de savoir qu'un
+# réglage a bien été pris, et pas seulement écrit.
+- name: Applique les paramètres noyau de durcissement
+  ansible.posix.sysctl:
+    name: "{{ item.parametre }}"
+    value: "{{ item.valeur }}"
+    sysctl_file: "{{ durcissement_sysctl_fichier }}"
+    sysctl_set: true
+    state: present
+    reload: true
+  loop: "{{ durcissement_sysctl | dict2items(key_name='parametre', value_name='valeur') }}"
+  loop_control:
+    label: "{{ item.parametre }}"
+  when: durcissement_sysctl | length > 0
+  tags: [durcissement, noyau]
+
+# --- Permissions des fichiers sensibles -------------------------------------
+
+# Deux temps, volontairement : on relève d'abord ce qui existe, puis on
+# n'agit que sur les fichiers présents. Un module file sur un chemin absent
+# échoue — et un « ignore_errors » masquerait aussi les vraies erreurs, y
+# compris celles de permissions qui sont l'objet de cette tâche.
+- name: Relève l'état des fichiers sensibles
+  ansible.builtin.stat:
+    path: "{{ item.chemin }}"
+  loop: "{{ durcissement_permissions_fichiers_par_famille[ansible_os_family] }}"
+  loop_control:
+    label: "{{ item.chemin }}"
+  register: durcissement_fichiers_releve
+  tags: [durcissement, permissions]
+
+- name: Restreint les permissions des fichiers sensibles présents
+  ansible.builtin.file:
+    path: "{{ item.0.chemin }}"
+    owner: "{{ item.0.proprietaire }}"
+    group: "{{ item.0.groupe }}"
+    mode: "{{ item.0.mode }}"
+  loop: >-
+    {{ durcissement_permissions_fichiers_par_famille[ansible_os_family]
+       | zip(durcissement_fichiers_releve.results) | list }}
+  loop_control:
+    label: "{{ item.0.chemin }}"
+  when: item.1.stat.exists
+  tags: [durcissement, permissions]
+
+# --- Services obsolètes -----------------------------------------------------
+
+- name: Recense les services présents sur la machine
+  ansible.builtin.service_facts:
+  when: durcissement_services_obsoletes | length > 0
+  tags: [durcissement, services]
+
+# La condition « item in ansible_facts.services » est le contraire d'un
+# ignore_errors : on vérifie que l'unité existe avant de la manipuler, donc
+# l'absence d'un service n'est ni une erreur ni un succès silencieux.
+- name: Arrête et désactive les services déclarés obsolètes
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+  loop: "{{ durcissement_services_obsoletes }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - durcissement_services_obsoletes | length > 0
+    - item in ansible_facts.services
+  tags: [durcissement, services]

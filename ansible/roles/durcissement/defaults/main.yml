@@ -1,0 +1,270 @@
+---
+# =============================================================================
+# Role durcissement — valeurs de repli
+# -----------------------------------------------------------------------------
+# Toutes les options sont ici ; aucune valeur n'est écrite en dur dans
+# tasks/main.yml. Deux principes ont guidé les valeurs par défaut :
+#
+#   1. Rien qui puisse couper l'accès SSH sans qu'on l'ait explicitement
+#      demandé. Le durcissement SSH par défaut est déjà restrictif (clés
+#      publiques, root interdit par mot de passe, algorithmes modernes), mais
+#      il ne se contredit jamais lui-même : si l'authentification par mot de
+#      passe est coupée sans qu'aucune clé ne soit déclarée dans l'inventaire,
+#      le rôle s'arrête au lieu de vous enfermer dehors.
+#
+#   2. Les valeurs propres à chaque famille d'OS sont regroupées dans des
+#      dictionnaires indexés par ansible_os_family, donc surchargeables depuis
+#      group_vars (un vars/<famille>.yml aurait une priorité supérieure à
+#      l'inventaire et rendrait toute surcharge inopérante).
+# =============================================================================
+
+# Familles d'OS prises en charge. Toute autre famille fait échouer le rôle au
+# premier assert : voir la note du rôle socle sur le silence trompeur.
+durcissement_familles_supportees:
+  - Debian
+  - RedHat
+
+# --- Garde-fou : le compte de secours ---------------------------------------
+
+# Compte à travers lequel on rentrera réparer si le durcissement SSH se passe
+# mal. Il doit exister (créé par le rôle utilisateurs) et disposer de sudo. Le
+# rôle refuse de s'exécuter s'il ne le trouve pas : une erreur de configuration
+# SSH sans porte de sortie n'est plus une erreur de configuration, c'est un
+# déplacement sur site.
+durcissement_utilisateur_secours: ""
+
+# --- SSH --------------------------------------------------------------------
+
+durcissement_ssh_dossier_config: /etc/ssh/sshd_config.d
+durcissement_ssh_config: "{{ durcissement_ssh_dossier_config }}/99-durcissement.conf"
+durcissement_ssh_config_principale: /etc/ssh/sshd_config
+durcissement_ssh_binaire: /usr/sbin/sshd
+
+# Validation : « sshd -t -f » teste un fichier donné (utilisé par validate: sur
+# le modèle), « sshd -t » teste la configuration complète telle qu'elle sera
+# relue au prochain démarrage. Les deux sont nécessaires : la première empêche
+# d'installer un fichier invalide, la seconde détecte un conflit entre notre
+# fichier et la configuration existante.
+durcissement_ssh_valider_fichier: /usr/sbin/sshd -t -f %s
+durcissement_ssh_valider_complet: /usr/sbin/sshd -t
+
+durcissement_ssh_port: 22
+
+# root par mot de passe : interdit. « prohibit-password » (et non « no ») laisse
+# la porte ouverte à une connexion root par CLÉ si l'exploitation en a déployé
+# une, sans autoriser le mot de passe : c'est une assurance anti-verrouillage
+# qui ne coûte rien en sécurité réelle (sans clé installée, root ne peut pas
+# entrer, exactement comme avec « no »).
+durcissement_ssh_connexion_root: prohibit-password
+
+# Authentification par mot de passe. Valeur par défaut permissive, mais le rôle
+# vérifie (assert) qu'au moins une clé publique est déclarée avant de la couper :
+# la sécurité visée est « clés uniquement », pas « personne ne peut entrer ».
+durcissement_ssh_mot_de_passe_autorise: false
+
+# UsePAM : indispensable sur Debian/Ubuntu (sessions, limites, comptes
+# verrouillés). Reste paramétrable car une machine sans PAM refuserait de
+# démarrer avec cette directive.
+durcissement_ssh_pam: true
+
+durcissement_ssh_max_tentatives: 4
+durcissement_ssh_delai_grace: 30
+durcissement_ssh_max_sessions: 4
+
+# Détection des sessions mortes : 5 minutes d'inactivité réseau, deux
+# manquements, session coupée. Sans ce réglage, les sessions orphelines
+# s'accumulent et consomment les MaxStartups de sshd — cause classique de
+# « connexion refusée » sur un serveur qui ne reçoit pourtant personne.
+durcissement_ssh_intervalle_keepalive: 300
+durcissement_ssh_keepalive_max: 2
+
+# Transferts : X11 et agent désactivés par défaut (ce sont des canaux de
+# rebond utilisés dans les attaques latérales). Le transfert TCP est désactivé
+# aussi ; l'activer est parfois nécessaire pour un rebond légitime, d'où la
+# variable.
+durcissement_ssh_x11: false
+durcissement_ssh_agent: false
+durcissement_ssh_transfert_tcp: false
+
+# Listes d'accès : vides par défaut. Les remplir est puissant et dangereux — un
+# compte oublié dans AllowUsers perd l'accès SSH immédiatement. Toujours tester
+# depuis une SECONDE session avant de fermer la première.
+durcissement_ssh_utilisateurs_autorises: []
+durcissement_ssh_groupes_autorises: []
+
+# Bannière légale : prévenir plutôt que poursuivre. Certains référentiels
+# d'audit l'exigent explicitement, et une bannière change la qualification
+# juridique d'une intrusion.
+durcissement_ssh_banniere_active: true
+durcissement_ssh_banniere: /etc/ssh/banniere.txt
+
+# Algorithmes cryptographiques. Listes modernes, supportées par OpenSSH 7.4 et
+# supérieur (donc tout Debian 10+/RHEL 8+). Restreindre davantage (retirer
+# aes*-ctr, par exemple) casse la compatibilité avec des clients anciens ou des
+# outils d'exploitation : à ne faire qu'après avoir vérifié ses clients.
+# Une liste vide omet la directive et laisse le défaut d'OpenSSH.
+durcissement_ssh_chiffrements:
+  - chacha20-poly1305@openssh.com
+  - aes256-gcm@openssh.com
+  - aes128-gcm@openssh.com
+  - aes256-ctr
+  - aes192-ctr
+  - aes128-ctr
+durcissement_ssh_macs:
+  - hmac-sha2-512-etm@openssh.com
+  - hmac-sha2-256-etm@openssh.com
+  - umac-128-etm@openssh.com
+durcissement_ssh_echanges:
+  - curve25519-sha256
+  - curve25519-sha256@libssh.org
+  - ecdh-sha2-nistp256
+  - ecdh-sha2-nistp384
+  - ecdh-sha2-nistp521
+  - diffie-hellman-group16-sha512
+  - diffie-hellman-group18-sha512
+
+# Journalisation : VERBOSE est nécessaire pour que fail2ban (et une analyse
+# post-incident) sache QUEL compte a été tenté, et pas seulement qu'il y a eu
+# une tentative. Le coût en volume de journaux est réel sur une machine
+# exposée — c'est le prix d'une trace exploitable.
+durcissement_ssh_niveau_journal: VERBOSE
+
+# --- Pare-feu ---------------------------------------------------------------
+
+durcissement_pare_feu_actif: true
+
+# Politique par défaut en entrée : refuser. C'est la seule valeur défendable
+# pour un serveur exposé (tout le reste consiste à ouvrir explicitement).
+durcissement_pare_feu_politique_entrante: deny
+
+# SSH est ouvert avant toute activation du pare-feu, et séparément : activer un
+# pare-feu qui refuse tout sans avoir autorisé l'administration coupe l'accès
+# immédiatement, et la correction demande la console.
+durcissement_pare_feu_ssh_autorise: true
+
+# Règles entrantes supplémentaires (liste de dictionnaires port/protocole).
+# Aucune règle n'est devinée depuis les services installés : ouvrir un port
+# parce qu'un service écoute dessus est précisément ce qu'on cherche à éviter.
+durcissement_pare_feu_regles: []
+
+# --- fail2ban ---------------------------------------------------------------
+
+durcissement_fail2ban_actif: true
+durcissement_fail2ban_maxretry: 5
+durcissement_fail2ban_findtime: 10m
+durcissement_fail2ban_bantime: 1h
+
+# Adresses jamais bannies : la boucle locale, plus toute adresse de supervision
+# ou de rebond. Un scan de vulnérabilités lancé depuis l'intérieur du réseau
+# bannit sinon le scanner, et l'équipe cherche pendant une heure pourquoi son
+# outil ne répond plus.
+durcissement_fail2ban_ignorer_ip: []
+
+# Action de bannissement. Vide = défaut de la distribution (choix volontaire :
+# les valeurs par défaut diffèrent entre iptables et nftables selon la version,
+# et une valeur figée ici finirait par ne plus correspondre au système).
+# Sous RHEL/Alma/Rocky, firewalld impose une valeur : voir
+# durcissement_par_famille (firewallcmd-ipset), sans quoi les bannissements
+# passent sous le radar de firewalld et le bannissement reste sans effet.
+durcissement_fail2ban_banaction: ""
+
+durcissement_fail2ban_fichier: /etc/fail2ban/jail.d/99-durcissement.local
+
+# --- Noyau (sysctl) ---------------------------------------------------------
+
+durcissement_sysctl: {}
+durcissement_sysctl_fichier: /etc/sysctl.d/99-durcissement.conf
+
+# --- Permissions des fichiers sensibles ------------------------------------
+
+# Listes par famille : /etc/gshadow n'existe pas sous RHEL, et /etc/shadow y
+# appartient à root (et non au groupe shadow comme sous Debian). Écrire ces
+# valeurs dans une tâche commune obligerait à multiplier les conditions ;
+# elles sont ici, lisibles et surchargeables.
+durcissement_permissions_fichiers_par_famille:
+  Debian:
+    - chemin: /etc/passwd
+      proprietaire: root
+      groupe: root
+      mode: "0644"
+    - chemin: /etc/shadow
+      proprietaire: root
+      groupe: shadow
+      mode: "0640"
+    - chemin: /etc/group
+      proprietaire: root
+      groupe: root
+      mode: "0644"
+    - chemin: /etc/gshadow
+      proprietaire: root
+      groupe: shadow
+      mode: "0640"
+    - chemin: /etc/ssh/sshd_config
+      proprietaire: root
+      groupe: root
+      mode: "0600"
+    - chemin: /etc/crontab
+      proprietaire: root
+      groupe: root
+      mode: "0600"
+    - chemin: /etc/sudoers
+      proprietaire: root
+      groupe: root
+      mode: "0440"
+  RedHat:
+    - chemin: /etc/passwd
+      proprietaire: root
+      groupe: root
+      mode: "0644"
+    - chemin: /etc/shadow
+      proprietaire: root
+      groupe: root
+      mode: "0000"
+    - chemin: /etc/group
+      proprietaire: root
+      groupe: root
+      mode: "0644"
+    - chemin: /etc/ssh/sshd_config
+      proprietaire: root
+      groupe: root
+      mode: "0600"
+    - chemin: /etc/crontab
+      proprietaire: root
+      groupe: root
+      mode: "0600"
+    - chemin: /etc/sudoers
+      proprietaire: root
+      groupe: root
+      mode: "0440"
+
+# --- Services à neutraliser -------------------------------------------------
+
+# Vide par défaut : arrêter un service que l'exploitation utilise encore
+# provoque une panne immédiate et parfaitement inutile. On y met les services
+# identifiés lors d'un audit (avahi-daemon, cups, rpcbind…), un par un, en
+# relisant le --check.
+durcissement_services_obsoletes: []
+
+# --- Spécificités par famille d'OS ------------------------------------------
+
+durcissement_par_famille:
+  Debian:
+    service_ssh: ssh
+    paquets_fail2ban:
+      - fail2ban
+    paquets_pare_feu:
+      - ufw
+    service_pare_feu: ufw
+    fail2ban_banaction: ""
+  RedHat:
+    service_ssh: sshd
+    paquets_fail2ban:
+      - fail2ban
+    paquets_pare_feu:
+      - firewalld
+    service_pare_feu: firewalld
+    # Sous RHEL/Alma/Rocky, firewalld est le gestionnaire de filtrage : un
+    # bannissement posé par iptables n'est pas pris en compte par firewalld et
+    # le contrevenant continue de passer. firewallcmd-ipset s'appuie sur
+    # firewalld et redémarre la chaîne correctement.
+    fail2ban_banaction: firewallcmd-ipset

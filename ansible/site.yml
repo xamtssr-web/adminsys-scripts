@@ -1,0 +1,60 @@
+---
+# =============================================================================
+# site.yml — point d'entrée unique de l'automatisation Ansible
+# -----------------------------------------------------------------------------
+# Ce playbook joue trois rôles, dans cet ordre — et cet ordre n'est pas
+# décoratif :
+#
+#   1. socle        : état minimal de la machine (paquets, heure juste, motd,
+#                     mises à jour de sécurité automatiques) ;
+#   2. utilisateurs : comptes, clés SSH, entrées sudoers ;
+#   3. durcissement : SSH, pare-feu, fail2ban, paramètres noyau, permissions.
+#
+# Pourquoi « utilisateurs » avant « durcissement » : durcir un accès qu'on n'a
+# pas encore créé, c'est fermer la porte à clé avec les clés restées à
+# l'intérieur. Le compte de secours est créé (étape 2) et sa présence est
+# vérifiée (étape 3) avant que la moindre directive SSH ne soit écrite.
+#
+# Pourquoi l'heure (étape 1) avant tout le reste : Kerberos tolère 5 minutes de
+# dérive, les certificats TLS et la corrélation de journaux entre machines
+# beaucoup moins. Un serveur à l'heure fausse produit des échecs
+# d'authentification impossibles à diagnostiquer à l'œil nu.
+#
+# Utilisation :
+#   ansible-playbook -i inventories/exemple/hosts.yml site.yml --check --diff
+#   ansible-playbook site.yml --tags durcissement
+#   ansible-playbook site.yml --limit serveurs_web
+#   ansible-playbook site.yml --list-tasks          # ce qui va être joué
+#
+# Les tags permettent de rejouer une seule couche : socle, utilisateurs,
+# durcissement. Une exécution sans tag joue les trois.
+# =============================================================================
+
+- name: Socle commun, comptes et durcissement de toute la flotte
+  hosts: tous
+  become: true
+  # become: true au niveau du play plutôt que sur chaque tâche : la totalité de
+  # ces opérations touche /etc, /usr ou systemd, aucune ne fonctionne sans les
+  # privilèges root. Le répéter 40 fois n'ajoute aucune sécurité, seulement des
+  # oublis possibles.
+  gather_facts: true
+  # Les faits (distribution, version, mémoire, interfaces) conditionnent les
+  # paquets et les chemins de fichiers : on les recueille systématiquement,
+  # même en --check (c'est une lecture, jamais une modification).
+  any_errors_fatal: true
+  # Un hôte en échec arrête le play pour toute la flotte. Pour un durcissement
+  # c'est le bon compromis : mieux vaut une flotte entièrement non durcie qu'une
+  # moitié durcie dont on ne sait plus laquelle. Sur un très grand parc, on
+  # préférera « serial » (déploiement par vagues) — voir le README.
+  roles:
+    - role: socle
+      tags:
+        - socle
+
+    - role: utilisateurs
+      tags:
+        - utilisateurs
+
+    - role: durcissement
+      tags:
+        - durcissement

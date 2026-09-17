@@ -1,0 +1,20 @@
+{# ========================================================================= #}
+{# maj-auto-debian.j2 — mises à jour de sécurité automatiques (Debian/Ubuntu) #}
+{#                                                                            #}
+{# L'emplacement /etc/apt/apt.conf.d/20auto-upgrades est celui que lit         #}
+{# réellement le paquet unattended-upgrades. Les versions majeures ne sont     #}
+{# jamais touchées : unattended-upgrades n'installe que les dépôts de          #}
+{# sécurité, ce qui est exactement le comportement attendu.                    #}
+{# ========================================================================= #}
+// {{ ansible_managed }} — toute modification locale sera écrasée.
+
+// Fréquence de rafraîchissement des listes de paquets (en jours).
+APT::Periodic::Update-Package-Lists "{{ socle_maj_auto_intervalle_jours }}";
+
+// Fréquence d'installation des mises à jour de sécurité (en jours).
+APT::Periodic::Unattended-Upgrade "{{ socle_maj_auto_intervalle_jours }}";
+
+{% if socle_maj_auto_autoclean %}
+// Purge des paquets téléchargés et devenus obsolètes.
+APT::Periodic::AutocleanInterval "7";
+{% endif %}

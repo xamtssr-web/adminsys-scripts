@@ -1,0 +1,34 @@
+---
+# =============================================================================
+# collections/requirements.yml — dépendances Ansible Galaxy
+# -----------------------------------------------------------------------------
+# ansible-core fournit le socle (user, group, package, template, lineinfile,
+# systemd_service, stat, slurp…) mais pas les modules spécifiques à un système,
+# ni les modules d'usage courant qui en ont été sortis :
+#
+#   ansible.posix      : authorized_key (clés SSH), sysctl (noyau),
+#                        firewalld (pare-feu RHEL/Alma/Rocky)
+#   community.general  : ufw (pare-feu Debian/Ubuntu), timezone (fuseau horaire),
+#                        syslogger (trace des changements de comptes)
+#
+# Ces modules ne sont pas dans ansible-core : « ansible.builtin.syslog »,
+# « ansible.builtin.authorized_key » ou « ansible.builtin.ufw » n'existent pas.
+# L'erreur est immédiate au --syntax-check, ce qui est préférable à un rôle qui
+# ne durcit rien en silence.
+#
+# Installation (une fois par poste, ou dans le pipeline) :
+#   ansible-galaxy collection install -r collections/requirements.yml
+#
+# Plages de versions : suffisamment larges pour ne pas casser à chaque
+# publication, suffisamment bornées pour qu'une rupture majeure soit vue comme
+# telle. Les versions testées avec ce dépôt sont indiquées en commentaire.
+# =============================================================================
+
+collections:
+  - name: ansible.posix
+    # Testé avec 2.2.2. Contient authorized_key, sysctl, firewalld.
+    version: ">=1.5.0,<3.0.0"
+
+  - name: community.general
+    # Testé avec 13.4.0. Contient ufw, timezone, syslogger.
+    version: ">=9.0.0,<15.0.0"

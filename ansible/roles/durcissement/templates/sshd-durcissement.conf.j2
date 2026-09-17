@@ -1,0 +1,86 @@
+{# ========================================================================= #}
+{# sshd-durcissement.conf.j2 — configuration SSH durcie                      #}
+{#                                                                            #}
+{# Déposé dans /etc/ssh/sshd_config.d/, donc INCLUS par la configuration       #}
+{# principale au lieu de la remplacer : le fichier livré par la distribution   #}
+{# reste lisible et comparable, et celui-ci est le seul à relire lors d'une    #}
+{# revue. Le rôle vérifie que la ligne « Include » existe bien en amont —      #}
+{# sans elle, tout ce fichier serait ignoré en silence.                        #}
+{#                                                                            #}
+{# Chaque directive est testée par « sshd -t -f » AVANT l'installation du      #}
+{# fichier (validate:), puis l'ensemble est testé à nouveau par le handler     #}
+{# juste avant le rechargement. Un fichier invalide ne peut donc pas arriver    #}
+{# à destination, et une contradiction entre fichiers est détectée avant       #}
+{# d'être appliquée : dans les deux cas, la machine reste sur sa               #}
+{# configuration précédente, qui fonctionne.                                   #}
+{# ========================================================================= #}
+# {{ ansible_managed }} — fichier géré, ne pas modifier à la main.
+
+# --- Port d'écoute ---------------------------------------------------------
+# Laissé à 22 par défaut : voir le commentaire de durcissement_ssh_port dans
+# les valeurs de repli. Changer ce port sans ajouter la règle de pare-feu
+# correspondante coupe l'accès.
+Port {{ durcissement_ssh_port }}
+
+# --- Authentification ------------------------------------------------------
+# « prohibit-password » interdit le mot de passe de root tout en laissant
+# l'accès par CLÉ si l'exploitation en a déployé une : une assurance contre le
+# verrouillage qui ne coûte rien.
+PermitRootLogin {{ durcissement_ssh_connexion_root }}
+PubkeyAuthentication yes
+PasswordAuthentication {{ 'yes' if durcissement_ssh_mot_de_passe_autorise else 'no' }}
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+UsePAM {{ 'yes' if durcissement_ssh_pam else 'no' }}
+MaxAuthTries {{ durcissement_ssh_max_tentatives }}
+{% if durcissement_ssh_utilisateurs_autorises | length > 0 %}
+# Liste blanche : tout compte absent de cette liste perd l'accès SSH. À
+# vérifier depuis une seconde session avant de fermer la première.
+AllowUsers {{ durcissement_ssh_utilisateurs_autorises | join(' ') }}
+{% endif %}
+{% if durcissement_ssh_groupes_autorises | length > 0 %}
+AllowGroups {{ durcissement_ssh_groupes_autorises | join(' ') }}
+{% endif %}
+
+# --- Sessions --------------------------------------------------------------
+# LoginGraceTime : le délai pendant lequel une connexion non authentifiée
+# occupe un processus. Sans limite, quelques centaines de connexions ouvertes
+# suffisent à saturer MaxStartups — un déni de service sans outil sophistiqué.
+LoginGraceTime {{ durcissement_ssh_delai_grace }}
+# ClientAlive* : ferme les sessions mortes (coupure réseau, portable fermé)
+# au lieu de les laisser consommer leur slot indéfiniment.
+ClientAliveInterval {{ durcissement_ssh_intervalle_keepalive }}
+ClientAliveCountMax {{ durcissement_ssh_keepalive_max }}
+MaxSessions {{ durcissement_ssh_max_sessions }}
+
+# --- Canaux de rebond ------------------------------------------------------
+# X11 et agent forwarding sont des canaux latéraux : le serveur devient un
+# relais utilisable pour atteindre le réseau interne depuis une session
+# compromise. Désactivés sauf besoin explicite.
+X11Forwarding {{ 'yes' if durcissement_ssh_x11 else 'no' }}
+AllowAgentForwarding {{ 'yes' if durcissement_ssh_agent else 'no' }}
+AllowTcpForwarding {{ 'yes' if durcissement_ssh_transfert_tcp else 'no' }}
+PermitTunnel no
+
+# --- Journalisation --------------------------------------------------------
+# VERBOSE fait apparaître le nom du compte tenté (et non seulement l'échec) :
+# c'est la matière première de fail2ban et de toute analyse post-incident.
+# Sans ce niveau, « 300 échecs d'authentification » ne dit pas s'il s'agit
+# d'une attaque ciblée ou d'un poste mal configuré.
+LogLevel {{ durcissement_ssh_niveau_journal }}
+{% if durcissement_ssh_banniere_active %}
+Banner {{ durcissement_ssh_banniere }}
+{% endif %}
+
+# --- Algorithmes cryptographiques ------------------------------------------
+# Listes modernes, compatibles OpenSSH 7.4+ (Debian 10+, RHEL 8+). Tout ce qui
+# est cassé (RC4, 3DES, SHA-1, diffie-hellman-group1) est écarté.
+{% if durcissement_ssh_chiffrements | length > 0 %}
+Ciphers {{ durcissement_ssh_chiffrements | join(',') }}
+{% endif %}
+{% if durcissement_ssh_macs | length > 0 %}
+MACs {{ durcissement_ssh_macs | join(',') }}
+{% endif %}
+{% if durcissement_ssh_echanges | length > 0 %}
+KexAlgorithms {{ durcissement_ssh_echanges | join(',') }}
+{% endif %}

@@ -1,0 +1,21 @@
+{# ========================================================================= #}
+{# maj-auto-redhat.j2 — mises à jour de sécurité automatiques (RHEL/Alma/Rocky) #}
+{#                                                                            #}
+{# Upgrade_type = security est le point essentiel : la valeur par défaut de    #}
+{# dnf-automatic est « default », qui installe TOUTES les mises à jour, y      #}
+{# compris les changements de version mineure. Sur un serveur de production,   #}
+{# c'est une décision d'exploitation, pas un réglage par défaut à subir.       #}
+{# ========================================================================= #}
+# {{ ansible_managed }} — toute modification locale sera écrasée.
+
+[commands]
+# security = correctifs de sécurité uniquement ; jamais de montée de version.
+upgrade_type = security
+# Les mises à jour sont téléchargées puis appliquées, sans intervention.
+download_updates = yes
+apply_updates = yes
+
+[emitters]
+# Journalisation dans journald : consultable via « journalctl -u dnf-automatic »,
+# donc corrélable avec le reste des journaux système.
+emit_via = stdio

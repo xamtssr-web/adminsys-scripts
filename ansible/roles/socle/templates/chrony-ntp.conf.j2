@@ -1,0 +1,15 @@
+{# ========================================================================= #}
+{# chrony-ntp.conf.j2 — serveurs de temps pour RHEL/Alma/Rocky (chrony)       #}
+{#                                                                            #}
+{# Déposé dans /etc/chrony.d/, inclus par /etc/chrony.conf via la directive   #}
+{# « confdir » que le rôle ajoute si elle manque.                             #}
+{# ========================================================================= #}
+# {{ ansible_managed }} — toute modification locale sera écrasée.
+{% for serveur in socle_serveurs_ntp %}
+server {{ serveur }} iburst
+{% endfor %}
+# « makestep 1.0 3 » : corrige immédiatement l'horloge si la dérive dépasse
+# une seconde au cours des trois premiers ajustements. Sans cette directive,
+# chrony étale la correction sur des heures — ce qui laisse une machine
+# faussement « synchronisée » sur un certificat TLS qui expire pendant ce temps.
+makestep 1.0 3

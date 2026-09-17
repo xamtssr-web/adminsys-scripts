@@ -1,0 +1,147 @@
+---
+# =============================================================================
+# Role socle — tâches
+# -----------------------------------------------------------------------------
+# Objectif : amener une machine fraîchement installée à un état connu, puis
+# garantir que cet état reste vrai dans le temps (horloge synchronisée, mises à
+# jour de sécurité appliquées automatiquement).
+#
+# Chaque tâche utilise un module idempotent : rejouer ce rôle sur une machine
+# conforme ne change rien et affiche « changed=0 ». C'est le seul moyen simple
+# de savoir qu'une machine a dérivé depuis le dernier passage.
+#
+# Aucune tâche « command » ou « shell » : tout ce qui suit sait dire s'il a
+# modifié quelque chose. Un « command » sans « changed_when » rend le compte
+# rendu inutilisable — il annonce des changements qui n'ont pas eu lieu.
+# =============================================================================
+
+- name: Vérifie que la famille d'OS est prise en charge par le rôle
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family in socle_familles_supportees
+    fail_msg: >-
+      Famille d'OS « {{ ansible_os_family }} » non prise en charge (prévu :
+      {{ socle_familles_supportees | join(', ') }}). Complétez
+      socle_paquets_par_famille et socle_horloge_par_famille dans
+      roles/socle/defaults/main.yml, ou retirez cet hôte de l'inventaire.
+    quiet: true
+  tags: [always]
+
+# --- Paquets ----------------------------------------------------------------
+
+# Le cache APT est rafraîchi avant les installations : sur une machine fraîche
+# ou une image de plus de quelques jours, un cache périmé fait échouer
+# l'installation avec un « 404 introuvable » qui n'a rien à voir avec le paquet
+# demandé. La validité d'une heure évite de payer un « apt update » à chaque
+# tâche (et à chaque rejeu).
+- name: Rafraîchit le cache des paquets (Debian/Ubuntu)
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: "{{ socle_cache_apt_validite }}"
+  when: ansible_os_family == 'Debian'
+  tags: [socle, paquets]
+
+- name: Installe les paquets du socle
+  ansible.builtin.package:
+    name: "{{ socle_paquets_base + (socle_paquets_par_famille[ansible_os_family] | default([])) }}"
+    state: present
+  tags: [socle, paquets]
+
+# --- Fuseau horaire et synchronisation de l'heure ---------------------------
+
+# Une machine à l'heure fausse casse bien plus que l'affichage : certificats
+# TLS refusés, authentifications réputées invalides, journaux impossibles à
+# corréler entre machines. Ce n'est pas un détail de confort.
+- name: Définit le fuseau horaire de la machine
+  community.general.timezone:
+    name: "{{ socle_fuseau_horaire }}"
+  tags: [socle, heure]
+
+- name: Crée le dossier de configuration de la synchronisation de l'heure
+  ansible.builtin.file:
+    path: "{{ socle_horloge_par_famille[ansible_os_family].dossier_conf }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [socle, heure]
+
+# Déclare le dossier de configuration additionnel de chrony. Sans cette ligne,
+# les fichiers déposés dans /etc/chrony.d sont ignorés sans le moindre
+# avertissement : le service démarre, se synchronise sur le pool public, et
+# personne ne s'aperçoit que la configuration interne n'est pas appliquée.
+- name: Déclare le dossier de configuration additionnel de chrony (RHEL/Alma/Rocky)
+  ansible.builtin.lineinfile:
+    path: "{{ socle_horloge_par_famille['RedHat'].fichier_principal }}"
+    regexp: "^confdir\\s+{{ socle_horloge_par_famille['RedHat'].dossier_conf | regex_escape }}\\s*$"
+    line: "confdir {{ socle_horloge_par_famille['RedHat'].dossier_conf }}"
+    state: present
+  when:
+    - ansible_os_family == 'RedHat'
+    - socle_serveurs_ntp | length > 0
+  notify: Redémarre la synchronisation de l'heure
+  tags: [socle, heure]
+
+- name: Configure les serveurs de temps
+  ansible.builtin.template:
+    src: "{{ socle_horloge_par_famille[ansible_os_family].modele }}"
+    dest: "{{ socle_horloge_par_famille[ansible_os_family].fichier_conf }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: socle_serveurs_ntp | length > 0
+  notify: Redémarre la synchronisation de l'heure
+  tags: [socle, heure]
+
+- name: Active et démarre le service de synchronisation de l'heure
+  ansible.builtin.systemd_service:
+    name: "{{ socle_horloge_par_famille[ansible_os_family].service }}"
+    enabled: true
+    state: started
+  tags: [socle, heure]
+
+# --- Message d'accueil ------------------------------------------------------
+
+- name: Publie le message d'accueil de connexion
+  ansible.builtin.template:
+    src: motd.j2
+    dest: "{{ socle_motd_chemin }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: socle_motd_active
+  tags: [socle, motd]
+
+# --- Mises à jour de sécurité automatiques ----------------------------------
+
+- name: Installe le service de mises à jour de sécurité automatiques
+  ansible.builtin.package:
+    name: "{{ socle_maj_auto_par_famille[ansible_os_family].paquet }}"
+    state: present
+  when: socle_maj_auto_active
+  tags: [socle, maj-auto]
+
+- name: Écrit la configuration des mises à jour automatiques
+  ansible.builtin.template:
+    src: "{{ socle_maj_auto_par_famille[ansible_os_family].modele }}"
+    dest: "{{ socle_maj_auto_par_famille[ansible_os_family].fichier_conf }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: socle_maj_auto_active
+  tags: [socle, maj-auto]
+
+# daemon_reload est nécessaire après l'installation d'un paquet qui apporte une
+# nouvelle unité (dnf-automatic.timer) : sans lui, systemd ne connaît pas
+# encore l'unité et refuse de démarrer un service pourtant installé.
+- name: Active les unités de mises à jour automatiques
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop: "{{ socle_maj_auto_par_famille[ansible_os_family].unites }}"
+  loop_control:
+    label: "{{ item }}"
+  when: socle_maj_auto_active
+  tags: [socle, maj-auto]

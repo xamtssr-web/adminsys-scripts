@@ -1,0 +1,108 @@
+---
+# =============================================================================
+# Role socle — valeurs de repli
+# -----------------------------------------------------------------------------
+# Rien n'est codé en dur dans tasks/main.yml : tout ce qui est utilisé ici est
+# défini (ou surchargeable) dans ce fichier. group_vars/tous.yml porte les
+# décisions d'exploitation, ce fichier porte les valeurs de repli.
+#
+# Pourquoi des dictionnaires indexés par ansible_os_family plutôt qu'un
+# vars/<famille>.yml ? Parce qu'un fichier de vars/ de rôle est chargé avec une
+# priorité SUPÉRIEURE à group_vars : une surcharge d'inventaire deviendrait
+# silencieusement sans effet. Ici, tout reste surchargeable depuis l'inventaire.
+# =============================================================================
+
+# Familles d'OS prises en charge. Toute autre famille fait échouer le rôle dès
+# le premier assert. Un rôle qui ne fait rien en silence est plus dangereux
+# qu'un rôle qui refuse de s'exécuter : on croit la machine conforme.
+socle_familles_supportees:
+  - Debian
+  - RedHat
+
+# Fuseau horaire (UTC par défaut : neutre, jamais faux, même si un parc
+# français préférera Europe/Paris pour lire les journaux sans conversion).
+socle_fuseau_horaire: UTC
+
+# Paquets communs à toutes les familles. Volontairement minimal : la chaîne de
+# certification est la seule dépendance dont l'absence provoque des pannes
+# impossibles à relier à leur cause (TLS qui échoue « par intermittence »).
+socle_paquets_base:
+  - ca-certificates
+
+# Paquets propres à chaque famille. Indexés par ansible_os_family (et non par
+# distribution : Debian et Ubuntu donnent « Debian », RHEL, Alma et Rocky
+# donnent « RedHat »).
+socle_paquets_par_famille:
+  Debian:
+    - vim-tiny
+    - systemd-timesyncd
+  RedHat:
+    - vim-enhanced
+    - chrony
+
+# Validité du cache APT en secondes : 3600 évite de relancer « apt update » à
+# chaque tâche dans l'heure qui suit, ce qui reste correct tout en garantissant
+# qu'un cache vieux d'une heure ne fait pas échouer une installation.
+socle_cache_apt_validite: 3600
+
+# Serveurs de temps à configurer. Vide par défaut : on laisse alors la
+# configuration de la distribution (pool NTP public), ce qui est préférable à
+# un serveur de temps inventé. En entreprise, on pointera vers les
+# contrôleurs de domaine ou un serveur NTP interne.
+socle_serveurs_ntp: []
+
+# Horloge par famille : paquet, unité systemd, fichier et modèle de
+# configuration. Les chemins diffèrent réellement d'une famille à l'autre.
+socle_horloge_par_famille:
+  Debian:
+    paquet: systemd-timesyncd
+    service: systemd-timesyncd
+    dossier_conf: /etc/systemd/timesyncd.conf.d
+    fichier_conf: /etc/systemd/timesyncd.conf.d/99-socle.conf
+    modele: timesyncd.conf.j2
+  RedHat:
+    paquet: chrony
+    service: chronyd
+    dossier_conf: /etc/chrony.d
+    fichier_conf: /etc/chrony.d/99-socle.conf
+    modele: chrony-ntp.conf.j2
+    # chrony ne lit /etc/chrony.d que si son fichier principal le déclare :
+    # le rôle ajoute cette ligne si nécessaire (lineinfile, idempotent).
+    fichier_principal: /etc/chrony.conf
+
+# Message d'accueil. Le motd n'est pas décoratif : c'est le seul endroit où
+# l'on rappelle qu'une machine est gérée par du code, et donc qu'une
+# modification manuelle sera écrasée.
+socle_motd_active: true
+socle_motd_chemin: /etc/motd
+socle_motd_titre: "Machine gérée par Ansible"
+socle_motd_responsable: "Équipe exploitation"
+socle_motd_avertissement: >-
+  Ne modifiez pas la configuration à la main : elle est gérée automatiquement.
+
+# Mises à jour de sécurité automatiques.
+socle_maj_auto_active: true
+
+socle_maj_auto_par_famille:
+  Debian:
+    paquet: unattended-upgrades
+    fichier_conf: /etc/apt/apt.conf.d/20auto-upgrades
+    modele: maj-auto-debian.j2
+    unites:
+      - unattended-upgrades.service
+  RedHat:
+    paquet: dnf-automatic
+    fichier_conf: /etc/dnf/automatic.conf
+    modele: maj-auto-redhat.j2
+    unites:
+      - dnf-automatic.timer
+
+# Fréquence (en jours) de la vérification des mises à jour. 1 = quotidien :
+# un correctif de sécurité publié un mardi doit être appliqué le mardi, pas le
+# lundi suivant.
+socle_maj_auto_intervalle_jours: 1
+
+# Purge des paquets obsolètes après mise à jour. Désactivé par défaut : une
+# suppression automatique de paquet peut retirer un paquet « orphelin » dont
+# l'équipe se sert encore, et l'incident arrive des semaines plus tard.
+socle_maj_auto_autoclean: false

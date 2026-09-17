@@ -1,0 +1,20 @@
+---
+# =============================================================================
+# Role socle — gestionnaires (handlers)
+# -----------------------------------------------------------------------------
+# Un gestionnaire ne s'exécute que s'il a été notifié, c'est-à-dire uniquement
+# si une tâche a réellement modifié quelque chose. C'est ce qui permet de
+# rejouer le rôle cent fois sans redémarrer un service pour rien : un
+# redémarrage inutile, sur un serveur de production, est un incident à retardement.
+# =============================================================================
+
+# Redémarrer (et non recharger) est volontaire : timesyncd et chronyd ne
+# relisent pas leur configuration à la volée, contrairement à sshd. Un
+# « reload » donnerait l'illusion d'une prise en compte, et l'écart entre la
+# configuration écrite sur le disque et celle réellement appliquée est le genre
+# de piège qui fait perdre une heure lors du prochain diagnostic.
+- name: Redémarre la synchronisation de l'heure
+  ansible.builtin.systemd_service:
+    name: "{{ socle_horloge_par_famille[ansible_os_family].service }}"
+    state: restarted
+  listen: "horloge reconfigurée"

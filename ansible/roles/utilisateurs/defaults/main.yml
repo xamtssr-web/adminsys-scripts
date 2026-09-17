@@ -1,0 +1,92 @@
+---
+# =============================================================================
+# Role utilisateurs — valeurs de repli
+# -----------------------------------------------------------------------------
+# La variable d'entrée est « utilisateurs_liste » : une liste de dictionnaires
+# déclarée dans l'inventaire (group_vars/tous.yml). Le rôle ne crée jamais de
+# compte implicite, ne devine jamais un uid, et ne supprime rien tant que la
+# suppression n'est pas explicitement demandée.
+# =============================================================================
+
+# Liste des comptes à garantir. Vide par défaut : un rôle de gestion de comptes
+# qui crée un compte « par défaut » est un compte que personne ne surveille.
+utilisateurs_liste: []
+
+# Familles d'OS prises en charge par ce rôle.
+utilisateurs_familles_supportees:
+  - Debian
+  - RedHat
+
+# Groupe conférant les droits d'administration, par famille d'OS : sudo sous
+# Debian/Ubuntu, wheel sous RHEL/Alma/Rocky. Se tromper ici ne provoque aucune
+# erreur — le compte est créé, simplement sans droits — d'où l'intérêt de le
+# lire depuis une variable unique plutôt que de l'écrire dans une tâche.
+utilisateurs_groupe_sudo_par_famille:
+  Debian: sudo
+  RedHat: wheel
+
+# Interpréteur de connexion par défaut des comptes créés.
+utilisateurs_coquille: /bin/bash
+
+# Interpréteur à utiliser pour les comptes techniques : il interdit toute
+# session interactive tout en laissant fonctionner les scripts planifiés.
+utilisateurs_coquille_non_interactive: /usr/sbin/nologin
+
+# Création du répertoire personnel.
+utilisateurs_creation_maison: true
+
+# Empreinte appliquée quand un compte n'en déclare aucune : « ! » signifie
+# « compte verrouillé, aucune authentification par mot de passe possible ».
+# C'est le bon défaut : l'accès se fait par clé SSH, et un compte technique
+# sans mot de passe ne peut pas être utilisé comme porte dérobée.
+utilisateurs_mot_de_passe_defaut: "!"
+
+# Durée de vie maximale d'un mot de passe, en jours (champ shadow). 90 jours
+# est un compromis classique ; l'important est que la valeur soit décidée, et
+# non héritée d'un défaut qu'on n'a jamais lu.
+utilisateurs_duree_vie_mot_de_passe: 90
+
+# Groupes supplémentaires à créer avant les comptes. Vide par défaut : les
+# comptes ne doivent pas référencer un groupe absent, ce qui fait échouer le
+# module user au milieu d'une boucle (les comptes déjà traités restent créés).
+utilisateurs_groupes_a_creer: []
+
+# Purge des clés SSH non déclarées. Désactivé par défaut : écraser un
+# authorized_keys existant retire l'accès de personnes dont on n'a pas
+# forcément connaissance, et le dégât est immédiat. À activer explicitement,
+# après un --check qui montre bien les clés qui vont disparaître.
+utilisateurs_cles_exclusives: false
+
+# Répertoire des entrées sudoers dédiées. Une entrée par utilisateur, en
+# 0440 root:root, validée par visudo avant d'être installée.
+utilisateurs_dossier_sudoers: /etc/sudoers.d
+utilisateurs_mode_sudoers: "0440"
+utilisateurs_valider_sudoers: "/usr/sbin/visudo -cf %s"
+
+# Commandes autorisées pour un utilisateur privilégié, quand il déclare
+# « sudo_commandes ». Vide = droits complets (ALL=(ALL:ALL) ALL), ce qui est le
+# comportement attendu du champ « sudo: true ».
+utilisateurs_sudo_commandes_defaut: []
+
+# Comptes sur lesquels aucune suppression n'est jamais appliquée, quoi qu'il
+# arrive. « root » n'est pas supprimable par le module user (le système le
+# refuse), mais l'inscrire ici évite surtout d'inventer une suppression de
+# compte système par une faute de frappe dans l'inventaire.
+utilisateurs_comptes_proteges:
+  - root
+
+# Comptes à retirer : liste explicite, vide par défaut. C'est la seule façon de
+# supprimer quelque chose avec ce rôle — une liste vide ne supprime rien.
+utilisateurs_a_supprimer: []
+
+# Journalisation des campagnes de gestion de comptes dans syslog. Un compte
+# créé est un changement d'habilitation : il doit laisser une trace, y compris
+# quand c'est un playbook qui l'a fait.
+utilisateurs_journaliser: true
+utilisateurs_journal_ident: ansible-comptes
+# « auth » (et non « authpriv ») : le module community.general.syslogger
+# n'accepte que les « facility » de syslog(3) classique. Utilisez « daemon »
+# si votre politique de journalisation sépare l'exploitation de
+# l'authentification.
+utilisateurs_journal_facility: auth
+utilisateurs_journal_priorite: info

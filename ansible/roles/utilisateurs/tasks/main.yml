@@ -1,0 +1,199 @@
+---
+# =============================================================================
+# Role utilisateurs — tâches
+# -----------------------------------------------------------------------------
+# Principe : l'inventaire décrit l'état cible, le rôle s'y aligne. La même
+# commande sert donc à créer un compte, à corriger une dérive ou à ne rien
+# faire — c'est ce qui rend le résultat reproductible et rejouable.
+#
+# Tout passe par des modules idempotents (user, authorized_key, template…) :
+# aucun « command useradd ». Un useradd relancé échoue ou casse le compte, et
+# ne sait pas si le travail était déjà fait.
+#
+# Point de sécurité : AUCUN mot de passe en clair ne transite par ce rôle. Les
+# comptes reçoivent une empreinte (mot_de_passe_hash, produite par
+# password_hash('sha512') depuis une variable vaultée) ou sont créés
+# verrouillés (« ! »).
+# =============================================================================
+
+- name: Vérifie que la famille d'OS est prise en charge par le rôle
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family in utilisateurs_familles_supportees
+    fail_msg: >-
+      Famille d'OS « {{ ansible_os_family }} » non prise en charge (prévu :
+      {{ utilisateurs_familles_supportees | join(', ') }}). Ajoutez le groupe
+      d'administration correspondant dans
+      utilisateurs_groupe_sudo_par_famille (roles/utilisateurs/defaults).
+    quiet: true
+  tags: [always]
+
+# --- Groupes ----------------------------------------------------------------
+
+# Les groupes sont créés avant les comptes : un compte qui référence un groupe
+# inexistant fait échouer le module user, et comme la boucle s'arrête là, on
+# se retrouve avec une moitié de campagne appliquée.
+- name: Crée les groupes supplémentaires déclarés
+  ansible.builtin.group:
+    name: "{{ item }}"
+    state: present
+  loop: "{{ utilisateurs_groupes_a_creer }}"
+  loop_control:
+    label: "{{ item }}"
+  tags: [utilisateurs, comptes]
+
+# --- Comptes -----------------------------------------------------------------
+
+# Le compte est créé s'il n'existe pas, aligné s'il existe déjà : c'est la
+# même tâche qui fait les deux. Les champs omis dans l'inventaire ne sont pas
+# touchés (omit) — un rôle ne doit pas réécrire ce qu'il ne gère pas.
+#
+# no_log sur cette tâche : même hachée, une empreinte de mot de passe est
+# exploitable hors ligne (attaque par dictionnaire). La valeur ne doit pas
+# apparaître dans un journal de déploiement, ni dans la sortie d'un --diff
+# projeté sur un écran partagé. Contrepartie assumée : le détail de l'erreur
+# est masqué ; le nom du compte en échec reste visible grâce à loop_control.
+- name: Crée ou aligne les comptes déclarés
+  ansible.builtin.user:
+    name: "{{ item.nom }}"
+    comment: "{{ item.commentaire | default(omit) }}"
+    shell: "{{ item.coquille | default(utilisateurs_coquille) }}"
+    groups: >-
+      {{ (item.groupes | default([]))
+         + ([utilisateurs_groupe_sudo_par_famille[ansible_os_family]] if (item.sudo | default(false)) else []) }}
+    append: true
+    create_home: "{{ item.creation_maison | default(utilisateurs_creation_maison) }}"
+    password: "{{ item.mot_de_passe_hash | default(utilisateurs_mot_de_passe_defaut) }}"
+    password_expire_max: "{{ item.duree_vie_mot_de_passe | default(utilisateurs_duree_vie_mot_de_passe) }}"
+    uid: "{{ item.uid | default(omit) }}"
+    system: "{{ item.systeme | default(omit) }}"
+    state: present
+  loop: "{{ utilisateurs_liste }}"
+  loop_control:
+    label: "{{ item.nom }}"
+  no_log: true
+  notify: Journalise la campagne de gestion des comptes
+  tags: [utilisateurs, comptes]
+
+- name: Vérifie qu'aucune suppression ne vise un compte protégé ou en cours d'usage
+  ansible.builtin.assert:
+    that:
+      - item not in utilisateurs_comptes_proteges
+      - item != ansible_user | default('')
+    fail_msg: >-
+      « {{ item }} » figure dans utilisateurs_a_supprimer alors qu'il s'agit
+      d'un compte protégé ({{ utilisateurs_comptes_proteges | join(', ') }})
+      ou du compte de connexion utilisé par Ansible ({{ ansible_user | default('-') }}).
+      Retirez-le de la liste : le retirer couperait l'accès en cours de
+      déploiement, sans possibilité de revenir en arrière.
+    quiet: true
+  loop: "{{ utilisateurs_a_supprimer }}"
+  loop_control:
+    label: "{{ item }}"
+  when: utilisateurs_a_supprimer | length > 0
+  tags: [utilisateurs, comptes]
+
+- name: Retire les comptes explicitement listés comme obsolètes
+  ansible.builtin.user:
+    name: "{{ item }}"
+    state: absent
+    remove: true
+  loop: "{{ utilisateurs_a_supprimer }}"
+  loop_control:
+    label: "{{ item }}"
+  when: utilisateurs_a_supprimer | length > 0
+  notify: Journalise la campagne de gestion des comptes
+  tags: [utilisateurs, comptes]
+
+- name: Retire l'entrée sudoers des comptes supprimés
+  ansible.builtin.file:
+    path: "{{ utilisateurs_dossier_sudoers }}/50-{{ item }}"
+    state: absent
+  loop: "{{ utilisateurs_a_supprimer }}"
+  loop_control:
+    label: "{{ item }}"
+  when: utilisateurs_a_supprimer | length > 0
+  notify: Valide la configuration sudoers complète
+  tags: [utilisateurs, sudoers]
+
+# --- Expiration des comptes --------------------------------------------------
+
+# L'expiration est posée dans une seconde tâche, et non dans la boucle
+# principale, pour une raison de lisibilité : le module attend un horodatage
+# epoch, alors que l'inventaire doit rester lisible par un humain (AAAA-MM-JJ).
+# La conversion est faite ici, en un seul endroit, et seulement pour les
+# comptes qui déclarent une expiration.
+- name: Pose la date d'expiration des comptes qui en déclarent une
+  ansible.builtin.user:
+    name: "{{ item.nom }}"
+    expires: "{{ (item.expiration | to_datetime('%Y-%m-%d')).strftime('%s') }}"
+    state: present
+  loop: "{{ utilisateurs_liste }}"
+  loop_control:
+    label: "{{ item.nom }}"
+  when: item.expiration | default('') | length > 0
+  notify: Journalise la campagne de gestion des comptes
+  tags: [utilisateurs, comptes]
+
+# --- Clés SSH ----------------------------------------------------------------
+
+# subelements parcourt les couples (compte, clé) : un compte sans clé est
+# simplement ignoré (skip_missing), ce qui évite d'avoir à traiter deux cas.
+# Rien n'est ajouté au compte d'un autre.
+- name: Installe les clés publiques autorisées
+  ansible.posix.authorized_key:
+    user: "{{ item.0.nom }}"
+    key: "{{ item.1 }}"
+    state: present
+    manage_dir: true
+  loop: "{{ utilisateurs_liste | subelements('cles_ssh', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.nom }}"
+  notify: Journalise la campagne de gestion des comptes
+  tags: [utilisateurs, cles-ssh]
+
+# Purge des clés non déclarées : tâche séparée, car elle raisonne sur la LISTE
+# complète des clés d'un compte. La faire par clé individuelle écraserait
+# authorized_keys à chaque itération, et le compte finirait avec la dernière
+# clé de la liste seulement — un bug silencieux classique de ce module.
+- name: Retire les clés publiques absentes de l'inventaire
+  ansible.posix.authorized_key:
+    user: "{{ item.nom }}"
+    key: "{{ item.cles_ssh | join('\n') }}"
+    state: present
+    exclusive: true
+    manage_dir: true
+  loop: "{{ utilisateurs_liste }}"
+  loop_control:
+    label: "{{ item.nom }}"
+  when:
+    - utilisateurs_cles_exclusives
+    - item.cles_ssh | default([]) | length > 0
+  notify: Journalise la campagne de gestion des comptes
+  tags: [utilisateurs, cles-ssh]
+
+# --- Entrées sudoers ---------------------------------------------------------
+
+# Une entrée par utilisateur dans /etc/sudoers.d/, jamais une ligne ajoutée
+# dans /etc/sudoers (qui est écrasé par les mises à jour du paquet sudo sous
+# RHEL, et que personne ne veut relire).
+#
+# validate : visudo vérifie la syntaxe sur le fichier temporaire AVANT son
+# installation. Sans lui, une faute de frappe dans la liste d'utilisateurs peut
+# rendre sudo inutilisable — donc empêcher toute correction ultérieure, y
+# compris par Ansible.
+- name: Installe l'entrée sudoers dédiée des comptes privilégiés
+  ansible.builtin.template:
+    src: sudoers.j2
+    dest: "{{ utilisateurs_dossier_sudoers }}/50-{{ item.nom }}"
+    owner: root
+    group: root
+    mode: "{{ utilisateurs_mode_sudoers }}"
+    validate: "{{ utilisateurs_valider_sudoers }}"
+  loop: "{{ utilisateurs_liste | selectattr('sudo', 'defined') | selectattr('sudo') | list }}"
+  loop_control:
+    label: "{{ item.nom }}"
+  notify:
+    - Journalise la campagne de gestion des comptes
+    - Valide la configuration sudoers complète
+  tags: [utilisateurs, sudoers]

@@ -1,0 +1,12 @@
+{# ========================================================================= #}
+{# timesyncd.conf.j2 — serveurs de temps pour Debian/Ubuntu (systemd-timesyncd) #}
+{#                                                                            #}
+{# Déposé dans /etc/systemd/timesyncd.conf.d/ : une « drop-in » qui complète   #}
+{# la configuration de la distribution au lieu de la remplacer. En cas de      #}
+{# montée de version, le fichier livré par le paquet reste intact, et celui-ci #}
+{# reste la seule chose à relire.                                             #}
+{# ========================================================================= #}
+# {{ ansible_managed }} — toute modification locale sera écrasée.
+[Time]
+NTP={{ socle_serveurs_ntp | join(' ') }}
+FallbackNTP={{ socle_serveurs_ntp | join(' ') }}

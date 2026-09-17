@@ -1,0 +1,23 @@
+{# ========================================================================= #}
+{# motd.j2 — message d'accueil affiché à chaque connexion SSH ou console.    #}
+{#                                                                            #}
+{# Deux informations y sont volontairement présentes : à qui appartient la    #}
+{# machine, et le fait que sa configuration est gérée par du code. C'est ce    #}
+{# qui évite qu'un intervenant corrige « à la main » un fichier qui sera       #}
+{# écrasé au prochain passage — la cause la plus fréquente de régression      #}
+{# inexplicable sur un parc automatisé.                                       #}
+{# ========================================================================= #}
+{% set interfaces = ansible_facts['default_ipv4'] | default({}) -%}
+{{ socle_motd_titre }}
+=============================================================================
+
+  Hôte          : {{ inventory_hostname }}
+  Adresse IP    : {{ interfaces.address | default('non détectée') }}
+  Système       : {{ ansible_distribution }} {{ ansible_distribution_version }}
+  Noyau         : {{ ansible_kernel }}
+  Fuseau        : {{ socle_fuseau_horaire }}
+  Responsable   : {{ socle_motd_responsable }}
+
+-----------------------------------------------------------------------------
+{{ socle_motd_avertissement }}
+-----------------------------------------------------------------------------

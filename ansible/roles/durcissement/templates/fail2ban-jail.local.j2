@@ -1,0 +1,46 @@
+{# ========================================================================= #}
+{# fail2ban-jail.local.j2 — bannissement des tentatives répétées              #}
+{#                                                                            #}
+{# Déposé dans jail.d/ : la configuration de la distribution n'est pas         #}
+{# remplacée, seulement complétée. fail2ban ne démarre pas si ce fichier est   #}
+{# syntaxiquement invalide — c'est bruyant, mais sans gravité : contrairement  #}
+{# à SSH, un fail2ban arrêté ne coupe pas l'accès à la machine, il retire      #}
+{# seulement une protection supplémentaire. Le redémarrage échoue et le        #}
+{# playbook le signale.                                                       #}
+{# ========================================================================= #}
+# {{ ansible_managed }} — fichier géré, ne pas modifier à la main.
+{% set action_bannissement = durcissement_fail2ban_banaction
+   if durcissement_fail2ban_banaction | length > 0
+   else durcissement_par_famille[ansible_os_family].fail2ban_banaction %}
+
+[DEFAULT]
+
+# Adresses jamais bannies : la boucle locale, et celles déclarées dans
+# l'inventaire (supervision, scanner de vulnérabilités, poste de rebond). Se
+# bannir soi-même en lançant un audit interne est un classique.
+ignoreip = 127.0.0.1/8 ::1{% for adresse in durcissement_fail2ban_ignorer_ip %} {{ adresse }}{% endfor %}
+
+{% if action_bannissement | length > 0 %}
+# Action de bannissement. Sous RHEL/Alma/Rocky, elle DOIT être une action
+# firewalld : un bannissement posé directement en iptables n'est pas vu par
+# firewalld, et le contrevenant continue de passer sans que rien ne l'indique.
+banaction = {{ action_bannissement }}
+{% endif %}
+
+# Le temps de bannissement double à chaque récidive (0.11+). Un attaquant
+# automatisé finit donc par être écarté durablement, sans configuration
+# supplémentaire ni intervention.
+bantime.increment = true
+
+# --- Prison SSH ------------------------------------------------------------
+[sshd]
+enabled = true
+
+# backend systemd : lecture depuis journald plutôt que /var/log/auth.log, dont
+# l'emplacement et la rotation varient d'une distribution à l'autre. C'est
+# aussi la source la plus fiable quand rsyslog n'est pas installé.
+backend = systemd
+port = {{ durcissement_ssh_port }}
+maxretry = {{ durcissement_fail2ban_maxretry }}
+findtime = {{ durcissement_fail2ban_findtime }}
+bantime = {{ durcissement_fail2ban_bantime }}

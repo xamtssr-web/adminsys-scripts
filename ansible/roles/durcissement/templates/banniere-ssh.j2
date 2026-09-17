@@ -1,0 +1,23 @@
+{# ========================================================================= #}
+{# banniere-ssh.j2 — avertissement présenté avant toute authentification      #}
+{#                                                                            #}
+{# Une bannière n'est pas décorative : elle prévient tout utilisateur que      #}
+{# l'accès est réservé et journalisé, ce qui change la qualification           #}
+{# juridique d'une intrusion. Certains référentiels de conformité l'exigent    #}
+{# explicitement (et vérifient la directive « Banner » dans sshd_config).      #}
+{#                                                                            #}
+{# Le fichier doit exister avant que sshd ne le référence : « sshd -t » refuse  #}
+{# une configuration pointant vers un fichier absent. Le rôle écrit donc la     #}
+{# bannière avant le fichier de configuration SSH.                             #}
+{# ========================================================================= #}
+AVERTISSEMENT
+=============
+
+Accès réservé au personnel autorisé de {{ inventory_hostname }}.
+
+Toute connexion est journalisée : identifiant, adresse d'origine, horodatage.
+Toute tentative d'accès non autorisée fera l'objet d'un signalement.
+
+Système : {{ ansible_distribution }} {{ ansible_distribution_version }}
+Exploitant : {{ socle_motd_responsable | default('Équipe exploitation') }}
+Fichier géré automatiquement — ne pas modifier à la main.
